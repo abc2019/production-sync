@@ -19,16 +19,43 @@ class SyncSummary:
     skipped_ombor_not_configured: bool = False
 
 
-async def sync_once(config: Config, ombor: OmborBridgeClient, state: StateStore) -> SyncSummary:
+async def _fetch_all_entries(
+    config: Config, transport=None
+) -> list[hr_reader.ProductionLogEntry]:
+    """HR'ning ichki API'sidan barcha sahifalarni (pagination) yig'ib oladi."""
+    entries: list[hr_reader.ProductionLogEntry] = []
+    since_id = 0
+    page_size = 200
+    while True:
+        page = await hr_reader.fetch_production_log_entries(
+            config.hr_internal_api_base_url,
+            config.hr_internal_api_token,
+            since_id=since_id,
+            limit=page_size,
+            transport=transport,
+        )
+        if not page:
+            break
+        entries.extend(page)
+        since_id = page[-1].log_id
+        if len(page) < page_size:
+            break
+    return entries
+
+
+async def sync_once(
+    config: Config, ombor: OmborBridgeClient, state: StateStore, *, hr_transport=None
+) -> SyncSummary:
     summary = SyncSummary()
 
     if not ombor.is_configured:
         summary.skipped_ombor_not_configured = True
         return summary
 
-    entries = hr_reader.fetch_production_log_entries(
-        config.hr_database_path, exclude_sync_keys=state.get_synced_keys()
-    )
+    all_entries = await _fetch_all_entries(config, transport=hr_transport)
+    synced_keys = state.get_synced_keys()
+    entries = [e for e in all_entries if e.sync_key not in synced_keys]
+
     summary.checked = len(entries)
     if not entries:
         return summary

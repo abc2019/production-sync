@@ -1,78 +1,84 @@
-import sqlite3
-
+import httpx
 import pytest
 
 from app import hr_reader
-from tests.conftest import insert_log_entry, insert_task
 
 
-def test_fetch_basic(hr_db_path):
-    task_id = insert_task(hr_db_path, task_text="Behi murabbosi qadoqlash")
-    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=5, operation_key="op-1")
+def make_transport(rows_by_since_id: dict[int, list[dict]], captured: dict | None = None):
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        since_id = int(params.get("since_id", "0"))
+        if captured is not None:
+            captured["last_headers"] = dict(request.headers)
+            captured["last_params"] = params
+        rows = rows_by_since_id.get(since_id, [])
+        return httpx.Response(200, json=rows)
+    return httpx.MockTransport(handler)
 
-    entries = hr_reader.fetch_production_log_entries(hr_db_path)
+
+@pytest.mark.asyncio
+async def test_fetch_basic():
+    rows = {0: [{"log_id": 1, "operation_key": "op-1", "task_id": 1,
+                 "task_text": "Behi murabbosi qadoqlash", "completed_qty": 5,
+                 "unit": "box", "created_at": "2026-01-01T10:00:00"}]}
+    entries = await hr_reader.fetch_production_log_entries(
+        "http://hr.test", "secret", transport=make_transport(rows)
+    )
     assert len(entries) == 1
     assert entries[0].task_text == "Behi murabbosi qadoqlash"
     assert entries[0].completed_qty == 5
-    assert entries[0].unit == "box"
     assert entries[0].sync_key == "op-1"
 
 
-def test_sync_key_falls_back_to_log_id_when_no_operation_key(hr_db_path):
-    task_id = insert_task(hr_db_path, task_text="X")
-    log_id = insert_log_entry(hr_db_path, task_id=task_id, completed_qty=3, operation_key=None)
-    entries = hr_reader.fetch_production_log_entries(hr_db_path)
-    assert entries[0].sync_key == f"log-{log_id}"
+@pytest.mark.asyncio
+async def test_sync_key_falls_back_to_log_id_when_no_operation_key():
+    rows = {0: [{"log_id": 7, "operation_key": None, "task_id": 1,
+                 "task_text": "X", "completed_qty": 3, "unit": "box",
+                 "created_at": "2026-01-01T10:00:00"}]}
+    entries = await hr_reader.fetch_production_log_entries(
+        "http://hr.test", "secret", transport=make_transport(rows)
+    )
+    assert entries[0].sync_key == "log-7"
 
 
-def test_excludes_zero_quantity(hr_db_path):
-    task_id = insert_task(hr_db_path, task_text="X")
-    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=0, operation_key="op-1")
-    entries = hr_reader.fetch_production_log_entries(hr_db_path)
+@pytest.mark.asyncio
+async def test_sends_auth_header_and_params():
+    captured = {}
+    rows = {0: []}
+    await hr_reader.fetch_production_log_entries(
+        "http://hr.test", "my-secret-token", since_id=0, limit=50,
+        transport=make_transport(rows, captured),
+    )
+    assert captured["last_headers"]["x-internal-token"] == "my-secret-token"
+    assert captured["last_params"]["since_id"] == "0"
+    assert captured["last_params"]["limit"] == "50"
+
+
+@pytest.mark.asyncio
+async def test_http_error_wrapped():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text="unauthorized")
+
+    with pytest.raises(hr_reader.HRClientError):
+        await hr_reader.fetch_production_log_entries(
+            "http://hr.test", "wrong-token", transport=httpx.MockTransport(handler)
+        )
+
+
+@pytest.mark.asyncio
+async def test_connection_error_wrapped():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    with pytest.raises(hr_reader.HRClientError):
+        await hr_reader.fetch_production_log_entries(
+            "http://hr.test", "token", transport=httpx.MockTransport(handler)
+        )
+
+
+@pytest.mark.asyncio
+async def test_empty_response():
+    entries = await hr_reader.fetch_production_log_entries(
+        "http://hr.test", "token", transport=make_transport({0: []})
+    )
     assert entries == []
-
-
-def test_excludes_cancelled_task(hr_db_path):
-    task_id = insert_task(hr_db_path, task_text="Bekor qilingan", cancelled=1)
-    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=10, operation_key="op-1")
-    entries = hr_reader.fetch_production_log_entries(hr_db_path)
-    assert entries == []
-
-
-def test_exclude_sync_keys_filters_already_processed(hr_db_path):
-    task_id = insert_task(hr_db_path, task_text="A")
-    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=3, operation_key="op-1")
-    entries = hr_reader.fetch_production_log_entries(hr_db_path, exclude_sync_keys={"op-1"})
-    assert entries == []
-
-
-def test_multiple_reports_for_same_task_all_returned(hr_db_path):
-    # Bitta task uchun bir necha alohida hisobot bo'lishi mumkin - hammasi qaytishi kerak
-    task_id = insert_task(hr_db_path, task_text="Behi murabbosi qadoqlash")
-    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=2, operation_key="op-1",
-                      created_at="2026-01-01T10:00:00")
-    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=3, operation_key="op-2",
-                      created_at="2026-01-01T14:00:00")
-    entries = hr_reader.fetch_production_log_entries(hr_db_path)
-    assert len(entries) == 2
-    assert {e.sync_key for e in entries} == {"op-1", "op-2"}
-
-
-def test_ordered_by_log_id(hr_db_path):
-    task_id = insert_task(hr_db_path, task_text="X")
-    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=1, operation_key="op-1")
-    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=1, operation_key="op-2")
-    entries = hr_reader.fetch_production_log_entries(hr_db_path)
-    assert [e.sync_key for e in entries] == ["op-1", "op-2"]
-
-
-def test_read_only_connection_cannot_write(hr_db_path):
-    conn = hr_reader._connect_read_only(hr_db_path)
-    try:
-        with pytest.raises(sqlite3.OperationalError):
-            conn.execute(
-                "INSERT INTO plan_tasks (week_start, weekday, task_order, task_text, created_by, created_at) "
-                "VALUES ('x',1,1,'x',1,'x')"
-            )
-    finally:
-        conn.close()

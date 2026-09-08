@@ -9,16 +9,15 @@ To'liq kontekst: `abc2019/inventory` repo'sidagi
 
 ## Qanday ishlaydi
 
-1. HR botining SQLite bazasidan **faqat o'qish** rejimida (`mode=ro&immutable=1`)
-   ulanadi — HR'ning kodiga yoki bazasiga hech qanday yozuv qilinmaydi.
+1. HR botining **ichki, faqat-o'qish HTTP API'sidan** (`internal_api.py`,
+   `abc2019/ShohonaWorkBot`) ma'lumot oladi — SQLite faylga to'g'ridan-to'g'ri
+   kirmaydi (Railway'da har bir xizmat alohida konteynerda, fayl almashish
+   yo'q). HR'ning kodiga yoki bazasiga hech qanday yozuv qilinmaydi.
 2. **`task_quantity_logs`** jadvalidan o'qiydi (`plan_tasks`/`task_quantities`
    emas — ular joriy holatning o'zgaruvchan yig'indisi, `task_quantity_logs`
    esa HR botining o'zi ishlatadigan O'ZGARMAS hisobot jurnali).
 3. Har bir qatorning `operation_key`i (HR botining o'z idempotentlik
-   kaliti) — bizning `source_id`imizning asosi. Shu bilan bir xil hisobot
-   ikki marta yuborilmaydi, va bitta task uchun bir necha alohida hisobot
-   bo'lsa (masalan ish kuni davomida ikki marta miqdor kiritilsa), har
-   biri alohida, to'g'ri qayta ishlanadi.
+   kaliti) — bizning `source_id`imizning asosi.
 4. Har bir hisobot matnini (`task_text`) Ombor katalogidagi (faqat
    `FINISHED`, faqat `external_code`i bor) mahsulotlar bilan solishtiradi
    (`erp_bridge_kit.best_name_match`).
@@ -43,16 +42,18 @@ To'liq kontekst: `abc2019/inventory` repo'sidagi
   kodini (`abc2019/ShohonaWorkBot/db.py`) o'qib tasdiqlandi — `status`
   qiymatlari `'pending'`/`'done'`/`'not_done'` (`'completed'` emas), va
   eng ishonchli manba sifatida `task_quantity_logs` (o'zgarmas jurnal)
-  tanlandi, `plan_tasks.status`ga bog'liq bo'lmasdan.
+  tanlandi.
 - ~~`completed_qty`/`box`ning Ombor birligiga nisbati~~ — **hal qilindi**:
-  1 box = 24 dona (tasdiqlangan). Ombor'ning W4'i ham shunga mos —
-  dona-asoslangan hisoblagichga o'zgartirildi (`completed_units`,
-  `batch_count` emas), chunki 300 (1 partiya) 24ga tekis bo'linmaydi.
-- **Haqiqiy HR bazasiga ulanib sinalmagan** — faqat HR'ning haqiqiy
-  sxemasiga mos soxta (fake) baza bilan testlangan (`tests/conftest.py`).
-  Real muhitda birinchi marta ishga tushirishdan oldin, kichik
-  `HR_DATABASE_PATH`ning **nusxasi** (production emas) bilan tekshirib
-  ko'rish tavsiya etiladi.
+  1 box = 24 dona. Ombor'ning W4'i ham shunga mos — dona-asoslangan
+  hisoblagichga o'zgartirildi.
+- ~~HR bazasiga qanday kirish~~ — **hal qilindi**: to'g'ridan-to'g'ri fayl
+  o'rniga HR'ga qo'shilgan kichik, izolyatsiyalangan `internal_api.py`
+  orqali (`abc2019/ShohonaWorkBot` PR — **hali merge qilinmagan, ko'rib
+  chiqish kutilmoqda**).
+- **Haqiqiy production HR ma'lumotlarida hali sinalmagan** — soxta (fake)
+  va real HR sxemasiga mos test bazasi bilan (funksional, E2E) tekshirilgan,
+  lekin haqiqiy Railway muhitida ikkalasi bir-biriga ulanib ishlashi hali
+  tasdiqlanmagan.
 
 ## Ishga tushirish
 
@@ -77,19 +78,27 @@ pip install -r requirements.txt
 pytest -q
 ```
 
-25 test: HR reader (faqat o'qish, `task_quantity_logs`dan o'qish,
-filtrlash, tartiblash), holat bazasi (SYNCED chetlab o'tiladi,
+24 test: HR reader (HTTP orqali, `mock transport` bilan tarmoqsiz —
+auth header, xato holatlari), holat bazasi (SYNCED chetlab o'tiladi,
 FAILED/NEEDS_REVIEW qayta uriniladi), orchestratsiya (moslik topilganda
 push, noaniq bo'lganda review, xomashyo hech qachon tanlanmasligi, box→dona
 konvertatsiyasi va sozlanadigan nisbat, noma'lum birlik review'ga tushishi,
 Ombor xatosidan keyin qayta tiklanish, takroriy qayta ishlanmaslik, Ombor
-sozlanmaganda xavfsiz to'xtash).
+sozlanmaganda xavfsiz to'xtash). Bundan tashqari, HR'ning haqiqiy
+`internal_api.py`si bilan real HTTP orqali end-to-end tekshirilgan.
 
 ## Deploy (Railway)
 
-`Procfile` va HR bazasiga qanday ulanish (Railway volume yoki boshqa
-usul bilan) muhitga bog'liq — `HR_DATABASE_PATH` shu joyni ko'rsatishi
-kerak. `STATE_DATABASE_PATH` uchun ham doimiy saqlanadigan joy (volume)
-tavsiya etiladi — aks holda har qayta deployda holat yo'qolib, tasklar
-qayta tekshiriladi (zararsiz, chunki Ombor tarafida ham idempotent, lekin
-ortiqcha ish).
+Bu xizmat **HR botidan alohida** Railway xizmati sifatida deploy qilinadi
+(fayl emas, tarmoq orqali gaplashadi):
+
+1. `abc2019/ShohonaWorkBot`dagi PR (ichki API qo'shilgan) merge qilinishi
+   va HR xizmatida `INTERNAL_API_TOKEN` o'zgaruvchisi sozlanishi kerak.
+2. Bu repo'ni yangi Railway xizmati sifatida deploy qiling.
+3. `HR_INTERNAL_API_BASE_URL` — Railway ichki tarmoq manzili (odatda
+   `http://<hr-xizmat-nomi>.railway.internal:8089`), `HR_INTERNAL_API_TOKEN`
+   — HR xizmatidagi bilan **bir xil** qiymat.
+4. `OMBOR_API_BASE_URL`ni sozlang.
+5. `STATE_DATABASE_PATH` uchun Railway Volume tavsiya etiladi — aks holda
+   har qayta deployda holat yo'qolib, hodisalar qayta tekshiriladi
+   (zararsiz, chunki Ombor tarafida ham idempotent, lekin ortiqcha ish).
