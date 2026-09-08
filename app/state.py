@@ -1,0 +1,91 @@
+"""
+production-sync'ning O'Z, kichik holat bazasi — HR yoki Ombor bazasiga
+hech qanday aloqasi yo'q. Ikki maqsad uchun:
+
+1. Qaysi HR task'lari allaqachon ko'rib chiqilganini eslab qolish (Ombor'ning
+   source_id-asosidagi idempotentligi ustiga qo'shimcha himoya qatlami —
+   ikkalasi ham ishlasa, hech qachon takroriy qayta ishlanmaydi).
+2. Noaniq (owner tasdig'ini kutayotgan) tasklarni saqlash — kelajakda
+   buni ko'rib chiquvchi kichik interfeys/hisobot qurish mumkin.
+"""
+import sqlite3
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS processed_tasks (
+    task_id INTEGER PRIMARY KEY,
+    status TEXT NOT NULL CHECK (status IN ('SYNCED', 'FAILED', 'NEEDS_REVIEW')),
+    matched_product_id TEXT,
+    ombor_event_id TEXT,
+    batch_count INTEGER,
+    reason TEXT,
+    processed_at TEXT NOT NULL
+);
+"""
+
+
+@dataclass(frozen=True)
+class ReviewItem:
+    task_id: int
+    reason: str
+    processed_at: str
+
+
+class StateStore:
+    def __init__(self, db_path: str):
+        self._conn = sqlite3.connect(db_path)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute(SCHEMA)
+        self._conn.commit()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def get_processed_task_ids(self) -> set[int]:
+        """
+        Faqat SYNCED (muvaffaqiyatli yakunlangan) tasklar butunlay chetlab
+        o'tiladi. FAILED/NEEDS_REVIEW har safar qayta tekshiriladi — vaqtinchalik
+        muammo (masalan Ombor vaqtincha ishlamay qolgan, yoki owner endi
+        moslashtirgan) tuzatilgach, o'zi tuzalib ketishi uchun.
+        """
+        rows = self._conn.execute(
+            "SELECT task_id FROM processed_tasks WHERE status = 'SYNCED'"
+        ).fetchall()
+        return {row["task_id"] for row in rows}
+
+    def mark_synced(self, task_id: int, *, product_id: str, ombor_event_id: str | None, batch_count: int) -> None:
+        self._upsert(task_id, status="SYNCED", matched_product_id=product_id,
+                     ombor_event_id=ombor_event_id, batch_count=batch_count, reason=None)
+
+    def mark_failed(self, task_id: int, *, reason: str) -> None:
+        self._upsert(task_id, status="FAILED", matched_product_id=None,
+                     ombor_event_id=None, batch_count=None, reason=reason)
+
+    def mark_needs_review(self, task_id: int, *, reason: str) -> None:
+        self._upsert(task_id, status="NEEDS_REVIEW", matched_product_id=None,
+                     ombor_event_id=None, batch_count=None, reason=reason)
+
+    def list_needs_review(self) -> list[ReviewItem]:
+        rows = self._conn.execute(
+            "SELECT task_id, reason, processed_at FROM processed_tasks "
+            "WHERE status = 'NEEDS_REVIEW' ORDER BY processed_at"
+        ).fetchall()
+        return [ReviewItem(task_id=r["task_id"], reason=r["reason"], processed_at=r["processed_at"]) for r in rows]
+
+    def _upsert(self, task_id, *, status, matched_product_id, ombor_event_id, batch_count, reason) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO processed_tasks
+                (task_id, status, matched_product_id, ombor_event_id, batch_count, reason, processed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(task_id) DO UPDATE SET
+                status=excluded.status, matched_product_id=excluded.matched_product_id,
+                ombor_event_id=excluded.ombor_event_id, batch_count=excluded.batch_count,
+                reason=excluded.reason, processed_at=excluded.processed_at
+            """,
+            (task_id, status, matched_product_id, ombor_event_id, batch_count, reason,
+             datetime.now(timezone.utc).isoformat()),
+        )
+        self._conn.commit()
