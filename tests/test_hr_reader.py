@@ -1,47 +1,69 @@
-from app import hr_reader
-from tests.conftest import insert_task
 import sqlite3
 
 import pytest
 
-
-def test_fetch_completed_tasks_basic(hr_db_path):
-    insert_task(hr_db_path, task_text="Behi murabbosi qadoqlash", completed_qty=5)
-    tasks = hr_reader.fetch_completed_tasks(hr_db_path)
-    assert len(tasks) == 1
-    assert tasks[0].task_text == "Behi murabbosi qadoqlash"
-    assert tasks[0].completed_qty == 5
+from app import hr_reader
+from tests.conftest import insert_log_entry, insert_task
 
 
-def test_excludes_tasks_without_quantity(hr_db_path):
-    insert_task(hr_db_path, task_text="Idishlarni tozalash", completed_qty=None)
-    tasks = hr_reader.fetch_completed_tasks(hr_db_path)
-    assert tasks == []
+def test_fetch_basic(hr_db_path):
+    task_id = insert_task(hr_db_path, task_text="Behi murabbosi qadoqlash")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=5, operation_key="op-1")
+
+    entries = hr_reader.fetch_production_log_entries(hr_db_path)
+    assert len(entries) == 1
+    assert entries[0].task_text == "Behi murabbosi qadoqlash"
+    assert entries[0].completed_qty == 5
+    assert entries[0].unit == "box"
+    assert entries[0].sync_key == "op-1"
+
+
+def test_sync_key_falls_back_to_log_id_when_no_operation_key(hr_db_path):
+    task_id = insert_task(hr_db_path, task_text="X")
+    log_id = insert_log_entry(hr_db_path, task_id=task_id, completed_qty=3, operation_key=None)
+    entries = hr_reader.fetch_production_log_entries(hr_db_path)
+    assert entries[0].sync_key == f"log-{log_id}"
 
 
 def test_excludes_zero_quantity(hr_db_path):
-    insert_task(hr_db_path, task_text="X", completed_qty=0)
-    tasks = hr_reader.fetch_completed_tasks(hr_db_path)
-    assert tasks == []
+    task_id = insert_task(hr_db_path, task_text="X")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=0, operation_key="op-1")
+    entries = hr_reader.fetch_production_log_entries(hr_db_path)
+    assert entries == []
 
 
-def test_excludes_cancelled_tasks(hr_db_path):
-    insert_task(hr_db_path, task_text="Bekor qilingan", completed_qty=10, cancelled=1)
-    tasks = hr_reader.fetch_completed_tasks(hr_db_path)
-    assert tasks == []
+def test_excludes_cancelled_task(hr_db_path):
+    task_id = insert_task(hr_db_path, task_text="Bekor qilingan", cancelled=1)
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=10, operation_key="op-1")
+    entries = hr_reader.fetch_production_log_entries(hr_db_path)
+    assert entries == []
 
 
-def test_exclude_ids_filters_already_processed(hr_db_path):
-    task_id = insert_task(hr_db_path, task_text="A", completed_qty=3)
-    tasks = hr_reader.fetch_completed_tasks(hr_db_path, exclude_ids={task_id})
-    assert tasks == []
+def test_exclude_sync_keys_filters_already_processed(hr_db_path):
+    task_id = insert_task(hr_db_path, task_text="A")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=3, operation_key="op-1")
+    entries = hr_reader.fetch_production_log_entries(hr_db_path, exclude_sync_keys={"op-1"})
+    assert entries == []
 
 
-def test_ordered_by_submitted_at(hr_db_path):
-    insert_task(hr_db_path, task_text="Ikkinchi", completed_qty=1, submitted_at="2026-01-02T00:00:00")
-    insert_task(hr_db_path, task_text="Birinchi", completed_qty=1, submitted_at="2026-01-01T00:00:00")
-    tasks = hr_reader.fetch_completed_tasks(hr_db_path)
-    assert [t.task_text for t in tasks] == ["Birinchi", "Ikkinchi"]
+def test_multiple_reports_for_same_task_all_returned(hr_db_path):
+    # Bitta task uchun bir necha alohida hisobot bo'lishi mumkin - hammasi qaytishi kerak
+    task_id = insert_task(hr_db_path, task_text="Behi murabbosi qadoqlash")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=2, operation_key="op-1",
+                      created_at="2026-01-01T10:00:00")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=3, operation_key="op-2",
+                      created_at="2026-01-01T14:00:00")
+    entries = hr_reader.fetch_production_log_entries(hr_db_path)
+    assert len(entries) == 2
+    assert {e.sync_key for e in entries} == {"op-1", "op-2"}
+
+
+def test_ordered_by_log_id(hr_db_path):
+    task_id = insert_task(hr_db_path, task_text="X")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=1, operation_key="op-1")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=1, operation_key="op-2")
+    entries = hr_reader.fetch_production_log_entries(hr_db_path)
+    assert [e.sync_key for e in entries] == ["op-1", "op-2"]
 
 
 def test_read_only_connection_cannot_write(hr_db_path):

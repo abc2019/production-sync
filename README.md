@@ -11,35 +11,44 @@ To'liq kontekst: `abc2019/inventory` repo'sidagi
 
 1. HR botining SQLite bazasidan **faqat o'qish** rejimida (`mode=ro&immutable=1`)
    ulanadi — HR'ning kodiga yoki bazasiga hech qanday yozuv qilinmaydi.
-2. `completed_qty > 0 AND submitted_at IS NOT NULL` bo'lgan (va bekor
-   qilinmagan) tasklarni oladi.
-3. Har bir task matnini (`task_text`) Ombor katalogidagi (faqat `FINISHED`,
-   faqat `external_code`i bor) mahsulotlar bilan solishtiradi
+2. **`task_quantity_logs`** jadvalidan o'qiydi (`plan_tasks`/`task_quantities`
+   emas — ular joriy holatning o'zgaruvchan yig'indisi, `task_quantity_logs`
+   esa HR botining o'zi ishlatadigan O'ZGARMAS hisobot jurnali).
+3. Har bir qatorning `operation_key`i (HR botining o'z idempotentlik
+   kaliti) — bizning `source_id`imizning asosi. Shu bilan bir xil hisobot
+   ikki marta yuborilmaydi, va bitta task uchun bir necha alohida hisobot
+   bo'lsa (masalan ish kuni davomida ikki marta miqdor kiritilsa), har
+   biri alohida, to'g'ri qayta ishlanadi.
+4. Har bir hisobot matnini (`task_text`) Ombor katalogidagi (faqat
+   `FINISHED`, faqat `external_code`i bor) mahsulotlar bilan solishtiradi
    (`erp_bridge_kit.best_name_match`).
-4. Ishonchli moslik topilsa → Ombor'ning `POST /production-batches`iga
-   `source_id=hr-task:{task_id}` bilan yuboradi (idempotent).
-5. Moslik noaniq bo'lsa (yoki umuman topilmasa) → **hech qachon avtomatik
+5. Ishonchli moslik topilsa → Ombor'ning `POST /production-batches`iga
+   `source_id=hr-op:{operation_key}` bilan yuboradi (idempotent).
+6. Moslik noaniq bo'lsa (yoki umuman topilmasa) → **hech qachon avtomatik
    yozilmaydi** — mahalliy holat bazasida `NEEDS_REVIEW` sifatida saqlanadi.
-6. Ombor vaqtincha ishlamay qolsa → `FAILED`, keyingi tsiklda **avtomatik
-   qayta uriniladi** (faqat `SYNCED` tasklar butunlay chetlab o'tiladi).
+7. Ombor vaqtincha ishlamay qolsa → `FAILED`, keyingi tsiklda **avtomatik
+   qayta uriniladi** (faqat `SYNCED` yozuvlar butunlay chetlab o'tiladi).
 
 ## ⚠️ Productionga chiqarishdan oldin tasdiqlash kerak
 
-- **HR'ning "bajarilgan" belgisi.** Bu xizmat `task_quantities.submitted_at
-  IS NOT NULL AND completed_qty > 0`ni "bajarilgan" belgisi sifatida
-  ishlatadi (`plan_tasks.status`ning aniq matn qiymatlari — masalan
-  "completed"/"bajarildi" — loyihaning bu bosqichida tasdiqlanmagan edi).
-  HR jamoasi bilan tekshiring; kerak bo'lsa `app/hr_reader.py`dagi
-  so'rovni moslashtiring.
-- **`completed_qty`ning ma'nosi.** Hozir bu son to'g'ridan-to'g'ri
-  Ombor'ning `batch_count`iga (bajarilgan PARTIYA soni, 1 partiya=300)
-  sifatida yuboriladi. Agar HR'da bu son aslida DONA sonini bildirsa
-  (partiya emas), `app/sync.py`da `batch_count=task.completed_qty // 300`
-  kabi konvertatsiya qo'shish kerak bo'ladi.
-- **Haqiqiy HR bazasiga ulanib sinalmagan** — faqat soxta (fake) schema
-  bilan testlangan (`tests/conftest.py`). Real muhitda birinchi marta
-  ishga tushirishdan oldin, kichik `HR_DATABASE_PATH`ning **nusxasi**
-  (production emas) bilan tekshirib ko'rish tavsiya etiladi.
+- ~~HR'ning "bajarilgan" belgisi~~ — **hal qilindi**: HR'ning haqiqiy
+  kodini (`abc2019/ShohonaWorkBot/db.py`) o'qib tasdiqlandi — `status`
+  qiymatlari `'pending'`/`'done'`/`'not_done'` (`'completed'` emas), va
+  eng ishonchli manba sifatida `task_quantity_logs` (o'zgarmas jurnal)
+  tanlandi, `plan_tasks.status`ga bog'liq bo'lmasdan.
+- **`completed_qty` / `unit="box"`ning Ombor birligiga nisbati — HALI
+  TASDIQLANMAGAN.** HR kodida "box" (quti) qattiq belgilangan birlik,
+  lekin bitta "box" nechta Ombor birligiga (banka) yoki nechta partiyaga
+  (300) tengligi HR/CEO tomonidan aytilishi kerak — kodda bunday
+  konvertatsiya konstantasi topilmadi. Hozircha `completed_qty` **xom
+  holda**, o'zgarishsiz `batch_count` sifatida yuborilmoqda — bu, ehtimol,
+  noto'g'ri. Aniqlangach `app/sync.py`da bitta qatorni (`batch_count=`)
+  konvertatsiya bilan almashtirish kerak bo'ladi.
+- **Haqiqiy HR bazasiga ulanib sinalmagan** — faqat HR'ning haqiqiy
+  sxemasiga mos soxta (fake) baza bilan testlangan (`tests/conftest.py`).
+  Real muhitda birinchi marta ishga tushirishdan oldin, kichik
+  `HR_DATABASE_PATH`ning **nusxasi** (production emas) bilan tekshirib
+  ko'rish tavsiya etiladi.
 
 ## Ishga tushirish
 

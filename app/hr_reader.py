@@ -1,26 +1,44 @@
 """
-HR botining bazasidan (FAQAT O'QISH) bajarilgan/miqdor kiritilgan
-tasklarni o'qiydi. HR'ning kodiga yoki bazasiga hech qanday YOZUV
-qilinmaydi — bu modul chegarasi qat'iy saqlanadi.
+HR botining bazasidan (FAQAT O'QISH) ishlab chiqarish hisobotlarini o'qiydi.
+HR'ning kodiga yoki bazasiga hech qanday YOZUV qilinmaydi — bu modul
+chegarasi qat'iy saqlanadi.
 
-MUHIM: HR'ning `plan_tasks.status` maydonining aniq qiymatlari (masalan
-"completed", "done", "bajarildi") shu loyihaning yozilish paytida
-tasdiqlanmagan edi. Shuning uchun "bajarilgan" belgisi sifatida
-`task_quantities.submitted_at IS NOT NULL AND completed_qty > 0`
-ishlatilmoqda — bu HR UI'da miqdor kiritilgani va sonning musbat
-ekanini bildiradi, status matnidan qat'i nazar. Productionga chiqarishdan
-oldin HR jamoasi bilan bu taxminni tasdiqlash tavsiya etiladi.
+MANBA: `task_quantity_logs` — HR botining o'zi ishlatadigan O'ZGARMAS
+(faqat qo'shiladigan) hisobot jurnali (`plan_tasks`/`task_quantities`
+esa joriy holatning YIG'INDISI, o'zgaruvchan — shuning uchun ular emas,
+aynan shu jurnal o'qiladi).
+
+Har bir qatorning `operation_key`i — HR botining o'zi ishlatadigan
+idempotentlik kaliti (Telegram callback ikki marta bosilishidan himoya
+uchun). Biz ham xuddi shu kalitni ishlatamiz — eng barqaror va HR'ning
+o'z semantikasiga mos identifikator.
+
+MUHIM: HR kodida `unit` maydoni qattiq "box" (quti) deb belgilangan —
+bu Ombor'ning "banka"/"partiya (300)" birligi bilan bir xil emas. Bitta
+"box" nechta Ombor birligiga (yoki nechta partiyaga) tengligi HR/CEO
+tomonidan tasdiqlanishi kerak — kodda bu konvertatsiya HALI YO'Q, faqat
+xom completed_qty qaytariladi (`app/sync.py`da ishlatishdan oldin
+ko'rib chiqing).
 """
 import sqlite3
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class CompletedTask:
-    id: int
+class ProductionLogEntry:
+    log_id: int
+    operation_key: str | None
+    task_id: int
     task_text: str
     completed_qty: int
-    submitted_at: str
+    unit: str
+    created_at: str
+
+    @property
+    def sync_key(self) -> str:
+        """Idempotentlik uchun barqaror kalit — operation_key mavjud bo'lsa
+        o'shani, aks holda (eski qatorlar uchun) log_id'ni ishlatadi."""
+        return self.operation_key or f"log-{self.log_id}"
 
 
 def _connect_read_only(db_path: str) -> sqlite3.Connection:
@@ -31,34 +49,38 @@ def _connect_read_only(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def fetch_completed_tasks(
-    db_path: str, *, exclude_ids: set[int] | None = None
-) -> list[CompletedTask]:
-    exclude_ids = exclude_ids or set()
+def fetch_production_log_entries(
+    db_path: str, *, exclude_sync_keys: set[str] | None = None
+) -> list[ProductionLogEntry]:
+    exclude_sync_keys = exclude_sync_keys or set()
     conn = _connect_read_only(db_path)
     try:
         rows = conn.execute(
             """
-            SELECT pt.id AS id, pt.task_text AS task_text,
-                   tq.completed_qty AS completed_qty, tq.submitted_at AS submitted_at
-            FROM plan_tasks pt
-            JOIN task_quantities tq ON tq.task_id = pt.id
-            WHERE pt.cancelled = 0
-              AND tq.completed_qty > 0
-              AND tq.submitted_at IS NOT NULL
-            ORDER BY tq.submitted_at ASC
+            SELECT l.id AS log_id, l.operation_key AS operation_key,
+                   l.task_id AS task_id, p.task_text AS task_text,
+                   l.completed_qty AS completed_qty, l.unit AS unit,
+                   l.created_at AS created_at
+            FROM task_quantity_logs l
+            JOIN plan_tasks p ON p.id = l.task_id
+            WHERE l.completed_qty > 0
+              AND p.cancelled = 0
+            ORDER BY l.id ASC
             """
         ).fetchall()
     finally:
         conn.close()
 
-    return [
-        CompletedTask(
-            id=row["id"],
+    entries = [
+        ProductionLogEntry(
+            log_id=row["log_id"],
+            operation_key=row["operation_key"],
+            task_id=row["task_id"],
             task_text=row["task_text"],
             completed_qty=row["completed_qty"],
-            submitted_at=row["submitted_at"],
+            unit=row["unit"],
+            created_at=row["created_at"],
         )
         for row in rows
-        if row["id"] not in exclude_ids
     ]
+    return [e for e in entries if e.sync_key not in exclude_sync_keys]

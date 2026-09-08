@@ -6,7 +6,7 @@ from erp_bridge_kit import ModuleClient, OmborBridgeClient
 from app.config import Config
 from app.state import StateStore
 from app.sync import sync_once
-from tests.conftest import insert_task
+from tests.conftest import insert_log_entry, insert_task
 
 
 PRODUCTS = [
@@ -49,8 +49,9 @@ def default_handler_factory(pushed: list):
 
 
 @pytest.mark.asyncio
-async def test_matched_task_gets_pushed_and_marked_synced(hr_db_path, state_db_path):
-    task_id = insert_task(hr_db_path, task_text="Behi murabbosi qadoqlash", completed_qty=4)
+async def test_matched_entry_gets_pushed_and_marked_synced(hr_db_path, state_db_path):
+    task_id = insert_task(hr_db_path, task_text="Behi murabbosi qadoqlash")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=4, operation_key="op-1")
     pushed = []
     ombor = make_ombor(default_handler_factory(pushed))
     state = StateStore(state_db_path)
@@ -63,14 +64,15 @@ async def test_matched_task_gets_pushed_and_marked_synced(hr_db_path, state_db_p
     assert summary.needs_review == 0
     assert pushed[0]["finished_product_id"] == "prod-1"
     assert pushed[0]["batch_count"] == 4
-    assert pushed[0]["source_id"] == f"hr-task:{task_id}"
-    assert state.get_processed_task_ids() == {task_id}
+    assert pushed[0]["source_id"] == "hr-op:op-1"
+    assert state.get_synced_keys() == {"op-1"}
     state.close()
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_task_goes_to_review_not_pushed(hr_db_path, state_db_path):
-    insert_task(hr_db_path, task_text="mutlaqo aloqasiz ish haqida gap", completed_qty=2)
+async def test_ambiguous_entry_goes_to_review_not_pushed(hr_db_path, state_db_path):
+    task_id = insert_task(hr_db_path, task_text="mutlaqo aloqasiz ish haqida gap")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=2, operation_key="op-1")
     pushed = []
     ombor = make_ombor(default_handler_factory(pushed))
     state = StateStore(state_db_path)
@@ -87,8 +89,8 @@ async def test_ambiguous_task_goes_to_review_not_pushed(hr_db_path, state_db_pat
 
 @pytest.mark.asyncio
 async def test_raw_product_never_matched(hr_db_path, state_db_path):
-    # "Banka 0.5L" RAW omborga tegishli - ishlab chiqarish (FINISHED) sifatida hech qachon tanlanmasligi kerak
-    insert_task(hr_db_path, task_text="Banka 0.5L", completed_qty=10)
+    task_id = insert_task(hr_db_path, task_text="Banka 0.5L")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=10, operation_key="op-1")
     pushed = []
     ombor = make_ombor(default_handler_factory(pushed))
     state = StateStore(state_db_path)
@@ -108,28 +110,29 @@ async def test_ombor_failure_marks_failed_and_retries_next_time(hr_db_path, stat
             return httpx.Response(200, json=PRODUCTS)
         return httpx.Response(500, text="internal error")
 
-    task_id = insert_task(hr_db_path, task_text="Behi murabbosi qadoqlash", completed_qty=1)
+    task_id = insert_task(hr_db_path, task_text="Behi murabbosi qadoqlash")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=1, operation_key="op-1")
     ombor = make_ombor(failing_handler)
     state = StateStore(state_db_path)
     config = make_config(hr_db_path, state_db_path)
 
     summary = await sync_once(config, ombor, state)
     assert summary.failed == 1
-    assert state.get_processed_task_ids() == set()  # qayta urinish uchun chetlanmagan
+    assert state.get_synced_keys() == set()  # qayta urinish uchun chetlanmagan
 
-    # Ombor tuzatildi deb faraz qilamiz — keyingi tsikl xuddi shu taskni qayta ko'radi
     pushed = []
     ombor2 = make_ombor(default_handler_factory(pushed))
     summary2 = await sync_once(config, ombor2, state)
     assert summary2.checked == 1
     assert summary2.synced == 1
-    assert pushed[0]["source_id"] == f"hr-task:{task_id}"
+    assert pushed[0]["source_id"] == "hr-op:op-1"
     state.close()
 
 
 @pytest.mark.asyncio
-async def test_already_synced_task_not_reprocessed(hr_db_path, state_db_path):
-    insert_task(hr_db_path, task_text="Behi murabbosi qadoqlash", completed_qty=1)
+async def test_already_synced_entry_not_reprocessed(hr_db_path, state_db_path):
+    task_id = insert_task(hr_db_path, task_text="Behi murabbosi qadoqlash")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=1, operation_key="op-1")
     pushed = []
     ombor = make_ombor(default_handler_factory(pushed))
     state = StateStore(state_db_path)
@@ -140,13 +143,31 @@ async def test_already_synced_task_not_reprocessed(hr_db_path, state_db_path):
 
     summary2 = await sync_once(config, ombor, state)
     assert summary2.checked == 0
-    assert len(pushed) == 1  # ikkinchi marta push qilinmadi
+    assert len(pushed) == 1
+    state.close()
+
+
+@pytest.mark.asyncio
+async def test_multiple_reports_for_same_task_both_synced_separately(hr_db_path, state_db_path):
+    task_id = insert_task(hr_db_path, task_text="Behi murabbosi qadoqlash")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=2, operation_key="op-1")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=3, operation_key="op-2")
+    pushed = []
+    ombor = make_ombor(default_handler_factory(pushed))
+    state = StateStore(state_db_path)
+    config = make_config(hr_db_path, state_db_path)
+
+    summary = await sync_once(config, ombor, state)
+    assert summary.synced == 2
+    assert {p["source_id"] for p in pushed} == {"hr-op:op-1", "hr-op:op-2"}
+    assert {p["batch_count"] for p in pushed} == {2, 3}
     state.close()
 
 
 @pytest.mark.asyncio
 async def test_skips_when_ombor_not_configured(hr_db_path, state_db_path):
-    insert_task(hr_db_path, task_text="Behi murabbosi qadoqlash", completed_qty=1)
+    task_id = insert_task(hr_db_path, task_text="Behi murabbosi qadoqlash")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=1, operation_key="op-1")
     ombor = OmborBridgeClient(ModuleClient(None))
     state = StateStore(state_db_path)
     config = make_config(hr_db_path, state_db_path)
@@ -158,7 +179,7 @@ async def test_skips_when_ombor_not_configured(hr_db_path, state_db_path):
 
 
 @pytest.mark.asyncio
-async def test_no_completed_tasks_is_a_noop(hr_db_path, state_db_path):
+async def test_no_entries_is_a_noop(hr_db_path, state_db_path):
     ombor = make_ombor(default_handler_factory([]))
     state = StateStore(state_db_path)
     config = make_config(hr_db_path, state_db_path)
