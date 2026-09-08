@@ -45,19 +45,33 @@ async def sync_once(config: Config, ombor: OmborBridgeClient, state: StateStore)
             logger.info("Entry %s needs review: %s", entry.sync_key, match.reason)
             continue
 
+        # HR "box" birligida hisobot beradi, Ombor esa dona (banka) bilan
+        # ishlaydi. 1 box = config.box_to_units dona. Boshqa birlik kelsa
+        # (hozircha HR kodida faqat "box" ishlatiladi), xavfsizlik uchun
+        # konvertatsiya qilinmaydi va review'ga tushadi.
+        if entry.unit == "box":
+            completed_units = entry.completed_qty * config.box_to_units
+        else:
+            state.mark_needs_review(
+                entry.sync_key,
+                reason=f"Noma'lum birlik '{entry.unit}' — konvertatsiya qoidasi yo'q",
+            )
+            summary.needs_review += 1
+            continue
+
         product = products_by_code[match.matched_code]
         source_id = build_source_id("hr-op", entry.sync_key)
         try:
             result = await ombor.push_production_batch(
                 source_id=source_id,
                 finished_product_id=product["id"],
-                batch_count=entry.completed_qty,
+                completed_units=completed_units,
             )
             state.mark_synced(
                 entry.sync_key,
                 product_id=product["id"],
                 ombor_event_id=result.get("id"),
-                batch_count=entry.completed_qty,
+                completed_units=completed_units,
             )
             summary.synced += 1
         except BridgeError as e:

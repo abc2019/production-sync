@@ -19,7 +19,7 @@ PRODUCTS = [
 ]
 
 
-def make_config(hr_db_path, state_db_path, threshold=0.72):
+def make_config(hr_db_path, state_db_path, threshold=0.72, box_to_units=24):
     return Config(
         hr_database_path=hr_db_path,
         state_database_path=state_db_path,
@@ -27,6 +27,7 @@ def make_config(hr_db_path, state_db_path, threshold=0.72):
         ombor_actor_name="production-sync-test",
         match_threshold=threshold,
         poll_interval_seconds=1,
+        box_to_units=box_to_units,
     )
 
 
@@ -49,13 +50,13 @@ def default_handler_factory(pushed: list):
 
 
 @pytest.mark.asyncio
-async def test_matched_entry_gets_pushed_and_marked_synced(hr_db_path, state_db_path):
+async def test_matched_entry_gets_pushed_converted_to_units_and_marked_synced(hr_db_path, state_db_path):
     task_id = insert_task(hr_db_path, task_text="Behi murabbosi qadoqlash")
-    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=4, operation_key="op-1")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=4, unit="box", operation_key="op-1")
     pushed = []
     ombor = make_ombor(default_handler_factory(pushed))
     state = StateStore(state_db_path)
-    config = make_config(hr_db_path, state_db_path)
+    config = make_config(hr_db_path, state_db_path)  # box_to_units=24
 
     summary = await sync_once(config, ombor, state)
 
@@ -63,9 +64,39 @@ async def test_matched_entry_gets_pushed_and_marked_synced(hr_db_path, state_db_
     assert summary.synced == 1
     assert summary.needs_review == 0
     assert pushed[0]["finished_product_id"] == "prod-1"
-    assert pushed[0]["batch_count"] == 4
+    assert pushed[0]["completed_units"] == "96"  # 4 box * 24
     assert pushed[0]["source_id"] == "hr-op:op-1"
     assert state.get_synced_keys() == {"op-1"}
+    state.close()
+
+
+@pytest.mark.asyncio
+async def test_custom_box_to_units_ratio(hr_db_path, state_db_path):
+    task_id = insert_task(hr_db_path, task_text="Behi murabbosi qadoqlash")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=2, unit="box", operation_key="op-1")
+    pushed = []
+    ombor = make_ombor(default_handler_factory(pushed))
+    state = StateStore(state_db_path)
+    config = make_config(hr_db_path, state_db_path, box_to_units=12)
+
+    await sync_once(config, ombor, state)
+    assert pushed[0]["completed_units"] == "24"  # 2 box * 12
+    state.close()
+
+
+@pytest.mark.asyncio
+async def test_unknown_unit_goes_to_review_not_pushed(hr_db_path, state_db_path):
+    task_id = insert_task(hr_db_path, task_text="Behi murabbosi qadoqlash")
+    insert_log_entry(hr_db_path, task_id=task_id, completed_qty=5, unit="kg", operation_key="op-1")
+    pushed = []
+    ombor = make_ombor(default_handler_factory(pushed))
+    state = StateStore(state_db_path)
+    config = make_config(hr_db_path, state_db_path)
+
+    summary = await sync_once(config, ombor, state)
+    assert summary.needs_review == 1
+    assert pushed == []
+    assert "kg" in state.list_needs_review()[0].reason
     state.close()
 
 
@@ -160,7 +191,7 @@ async def test_multiple_reports_for_same_task_both_synced_separately(hr_db_path,
     summary = await sync_once(config, ombor, state)
     assert summary.synced == 2
     assert {p["source_id"] for p in pushed} == {"hr-op:op-1", "hr-op:op-2"}
-    assert {p["batch_count"] for p in pushed} == {2, 3}
+    assert {p["completed_units"] for p in pushed} == {"48", "72"}  # 2*24, 3*24
     state.close()
 
 

@@ -22,11 +22,19 @@ To'liq kontekst: `abc2019/inventory` repo'sidagi
 4. Har bir hisobot matnini (`task_text`) Ombor katalogidagi (faqat
    `FINISHED`, faqat `external_code`i bor) mahsulotlar bilan solishtiradi
    (`erp_bridge_kit.best_name_match`).
-5. Ishonchli moslik topilsa → Ombor'ning `POST /production-batches`iga
-   `source_id=hr-op:{operation_key}` bilan yuboradi (idempotent).
-6. Moslik noaniq bo'lsa (yoki umuman topilmasa) → **hech qachon avtomatik
+5. HR "box" (quti) birligida hisobot beradi — Ombor esa dona (banka) bilan
+   ishlaydi. **1 box = 24 dona** (`BOX_TO_UNITS` orqali sozlanadi) —
+   tasdiqlangan qiymat. Boshqa birlik (masalan "kg") kelsa, xavfsizlik
+   uchun konvertatsiya qilinmaydi, review'ga tushadi.
+6. Ishonchli moslik topilsa → Ombor'ning `POST /production-batches`iga
+   `source_id=hr-op:{operation_key}`, `completed_units=<dona soni>` bilan
+   yuboradi (idempotent). Ombor tarafida bu dona darhol tayyor mahsulot
+   qoldig'iga qo'shiladi; xomashyo esa faqat to'liq partiya (300)
+   yig'ilganda kamayadi (Ombor'ning W4 hisoblagichi, batafsil:
+   `abc2019/inventory/docs/erp_integration_plan.md`).
+7. Moslik noaniq bo'lsa (yoki umuman topilmasa) → **hech qachon avtomatik
    yozilmaydi** — mahalliy holat bazasida `NEEDS_REVIEW` sifatida saqlanadi.
-7. Ombor vaqtincha ishlamay qolsa → `FAILED`, keyingi tsiklda **avtomatik
+8. Ombor vaqtincha ishlamay qolsa → `FAILED`, keyingi tsiklda **avtomatik
    qayta uriniladi** (faqat `SYNCED` yozuvlar butunlay chetlab o'tiladi).
 
 ## ⚠️ Productionga chiqarishdan oldin tasdiqlash kerak
@@ -36,14 +44,10 @@ To'liq kontekst: `abc2019/inventory` repo'sidagi
   qiymatlari `'pending'`/`'done'`/`'not_done'` (`'completed'` emas), va
   eng ishonchli manba sifatida `task_quantity_logs` (o'zgarmas jurnal)
   tanlandi, `plan_tasks.status`ga bog'liq bo'lmasdan.
-- **`completed_qty` / `unit="box"`ning Ombor birligiga nisbati — HALI
-  TASDIQLANMAGAN.** HR kodida "box" (quti) qattiq belgilangan birlik,
-  lekin bitta "box" nechta Ombor birligiga (banka) yoki nechta partiyaga
-  (300) tengligi HR/CEO tomonidan aytilishi kerak — kodda bunday
-  konvertatsiya konstantasi topilmadi. Hozircha `completed_qty` **xom
-  holda**, o'zgarishsiz `batch_count` sifatida yuborilmoqda — bu, ehtimol,
-  noto'g'ri. Aniqlangach `app/sync.py`da bitta qatorni (`batch_count=`)
-  konvertatsiya bilan almashtirish kerak bo'ladi.
+- ~~`completed_qty`/`box`ning Ombor birligiga nisbati~~ — **hal qilindi**:
+  1 box = 24 dona (tasdiqlangan). Ombor'ning W4'i ham shunga mos —
+  dona-asoslangan hisoblagichga o'zgartirildi (`completed_units`,
+  `batch_count` emas), chunki 300 (1 partiya) 24ga tekis bo'linmaydi.
 - **Haqiqiy HR bazasiga ulanib sinalmagan** — faqat HR'ning haqiqiy
   sxemasiga mos soxta (fake) baza bilan testlangan (`tests/conftest.py`).
   Real muhitda birinchi marta ishga tushirishdan oldin, kichik
@@ -73,11 +77,13 @@ pip install -r requirements.txt
 pytest -q
 ```
 
-21 test: HR reader (faqat o'qish, filtrlash, tartiblash), holat bazasi
-(SYNCED chetlab o'tiladi, FAILED/NEEDS_REVIEW qayta uriniladi),
-orchestratsiya (moslik topilganda push, noaniq bo'lganda review,
-xomashyo hech qachon tanlanmasligi, Ombor xatosidan keyin qayta tiklanish,
-takroriy qayta ishlanmaslik, Ombor sozlanmaganda xavfsiz to'xtash).
+25 test: HR reader (faqat o'qish, `task_quantity_logs`dan o'qish,
+filtrlash, tartiblash), holat bazasi (SYNCED chetlab o'tiladi,
+FAILED/NEEDS_REVIEW qayta uriniladi), orchestratsiya (moslik topilganda
+push, noaniq bo'lganda review, xomashyo hech qachon tanlanmasligi, box→dona
+konvertatsiyasi va sozlanadigan nisbat, noma'lum birlik review'ga tushishi,
+Ombor xatosidan keyin qayta tiklanish, takroriy qayta ishlanmaslik, Ombor
+sozlanmaganda xavfsiz to'xtash).
 
 ## Deploy (Railway)
 
