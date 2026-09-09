@@ -18,7 +18,7 @@ PRODUCTS = [
 ]
 
 
-def make_config(threshold=0.72, box_to_units=24):
+def make_config(threshold=0.72, unit_multipliers=None):
     return Config(
         hr_internal_api_base_url="http://hr.test",
         hr_internal_api_token="secret",
@@ -27,7 +27,7 @@ def make_config(threshold=0.72, box_to_units=24):
         ombor_actor_name="production-sync-test",
         match_threshold=threshold,
         poll_interval_seconds=1,
-        box_to_units=box_to_units,
+        unit_multipliers=unit_multipliers or {"box": 24, "partiya": 300, "dona": 1, "ta": 1},
     )
 
 
@@ -90,15 +90,41 @@ async def test_matched_entry_gets_pushed_converted_to_units_and_marked_synced(st
 
 
 @pytest.mark.asyncio
-async def test_custom_box_to_units_ratio(state_db_path):
+async def test_custom_unit_multiplier(state_db_path):
     hr_entries = [entry(1, "Behi murabbosi qadoqlash", 2)]
     pushed = []
     ombor = make_ombor(default_ombor_handler_factory(pushed))
     state = StateStore(state_db_path)
-    config = make_config(box_to_units=12)
+    config = make_config(unit_multipliers={"box": 12})
 
     await sync_once(config, ombor, state, hr_transport=hr_transport_with_entries(hr_entries))
     assert pushed[0]["completed_units"] == "24"
+    state.close()
+
+
+@pytest.mark.asyncio
+async def test_partiya_unit_uses_300_multiplier(state_db_path):
+    hr_entries = [entry(1, "Behi murabbosi qadoqlash", 2, unit="partiya")]
+    pushed = []
+    ombor = make_ombor(default_ombor_handler_factory(pushed))
+    state = StateStore(state_db_path)
+    config = make_config()
+
+    await sync_once(config, ombor, state, hr_transport=hr_transport_with_entries(hr_entries))
+    assert pushed[0]["completed_units"] == "600"  # 2 * 300
+    state.close()
+
+
+@pytest.mark.asyncio
+async def test_dona_unit_uses_1_multiplier(state_db_path):
+    hr_entries = [entry(1, "Behi murabbosi qadoqlash", 50, unit="dona")]
+    pushed = []
+    ombor = make_ombor(default_ombor_handler_factory(pushed))
+    state = StateStore(state_db_path)
+    config = make_config()
+
+    await sync_once(config, ombor, state, hr_transport=hr_transport_with_entries(hr_entries))
+    assert pushed[0]["completed_units"] == "50"
     state.close()
 
 

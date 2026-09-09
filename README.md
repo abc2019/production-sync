@@ -21,10 +21,14 @@ To'liq kontekst: `abc2019/inventory` repo'sidagi
 4. Har bir hisobot matnini (`task_text`) Ombor katalogidagi (faqat
    `FINISHED`, faqat `external_code`i bor) mahsulotlar bilan solishtiradi
    (`erp_bridge_kit.best_name_match`).
-5. HR "box" (quti) birligida hisobot beradi — Ombor esa dona (banka) bilan
-   ishlaydi. **1 box = 24 dona** (`BOX_TO_UNITS` orqali sozlanadi) —
-   tasdiqlangan qiymat. Boshqa birlik (masalan "kg") kelsa, xavfsizlik
-   uchun konvertatsiya qilinmaydi, review'ga tushadi.
+5. HR har xil vazifada har xil birlikda hisobot berishi mumkin (masalan
+   ba'zilari "box"da, ba'zilari to'g'ridan-to'g'ri "partiya"da — HR
+   kodini o'qib aniqlandi: `unit` maydoni erkin, faqat "box"/"dona" kabi
+   taniqli so'zlar normallashtiriladi, qolgani xom holda saqlanadi).
+   `UNIT_MULTIPLIERS` (JSON, sozlanadigan) har bir birlik uchun 1 dona
+   (banka)ga necha marta ko'paytirishni belgilaydi — standart:
+   `box=24, partiya=300, dona=1, ta=1`. Xaritada yo'q birlik kelsa,
+   xavfsizlik uchun konvertatsiya qilinmaydi, review'ga tushadi.
 6. Ishonchli moslik topilsa → Ombor'ning `POST /production-batches`iga
    `source_id=hr-op:{operation_key}`, `completed_units=<dona soni>` bilan
    yuboradi (idempotent). Ombor tarafida bu dona darhol tayyor mahsulot
@@ -43,8 +47,12 @@ To'liq kontekst: `abc2019/inventory` repo'sidagi
   qiymatlari `'pending'`/`'done'`/`'not_done'` (`'completed'` emas), va
   eng ishonchli manba sifatida `task_quantity_logs` (o'zgarmas jurnal)
   tanlandi.
-- ~~`completed_qty`/`box`ning Ombor birligiga nisbati~~ — **hal qilindi**:
-  1 box = 24 dona. Ombor'ning W4'i ham shunga mos — dona-asoslangan
+- ~~`completed_qty`/birlik nisbati~~ — **hal qilindi (kengaytirilgan)**:
+  1 box = 24 dona (tasdiqlangan), 1 partiya = 300 dona (Ombor'ning loyiha
+  qoidasi). HR kodini chuqurroq o'qib, `unit` maydoni qattiq "box" emas,
+  vazifaga qarab har xil (masalan ba'zi vazifalar to'g'ridan-to'g'ri
+  "partiya" birligida hisobot beradi) ekanligi aniqlandi —
+  `UNIT_MULTIPLIERS` shuni hisobga oladi. Ombor'ning W4'i dona-asoslangan
   hisoblagichga o'zgartirildi.
 - ~~HR bazasiga qanday kirish~~ — **hal qilindi**: to'g'ridan-to'g'ri fayl
   o'rniga HR'ga qo'shilgan kichik, izolyatsiyalangan `internal_api.py`
@@ -78,10 +86,10 @@ pip install -r requirements.txt
 pytest -q
 ```
 
-24 test: HR reader (HTTP orqali, `mock transport` bilan tarmoqsiz —
+26 test: HR reader (HTTP orqali, `mock transport` bilan tarmoqsiz —
 auth header, xato holatlari), holat bazasi (SYNCED chetlab o'tiladi,
 FAILED/NEEDS_REVIEW qayta uriniladi), orchestratsiya (moslik topilganda
-push, noaniq bo'lganda review, xomashyo hech qachon tanlanmasligi, box→dona
+push, noaniq bo'lganda review, xomashyo hech qachon tanlanmasligi, birlik→dona
 konvertatsiyasi va sozlanadigan nisbat, noma'lum birlik review'ga tushishi,
 Ombor xatosidan keyin qayta tiklanish, takroriy qayta ishlanmaslik, Ombor
 sozlanmaganda xavfsiz to'xtash). Bundan tashqari, HR'ning haqiqiy

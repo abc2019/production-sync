@@ -1,5 +1,6 @@
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from erp_bridge_kit.matching import DEFAULT_CONFIDENCE_THRESHOLD
 
@@ -13,10 +14,24 @@ class Config:
     ombor_actor_name: str
     match_threshold: float
     poll_interval_seconds: int
-    box_to_units: int  # 1 HR "box"i nechta Ombor birligiga (banka) teng
+    # HR'da bitta topshiriq turli birlikda hisobot berilishi mumkin (masalan
+    # ba'zi vazifalar "box"da, ba'zilari to'g'ridan-to'g'ri "partiya"da).
+    # Har bir birlik uchun 1 dona (banka)ga necha marta ko'paytirish kerakligi.
+    unit_multipliers: dict[str, int] = field(
+        default_factory=lambda: {"box": 24, "partiya": 300, "dona": 1, "ta": 1}
+    )
 
 
 def load_config() -> Config:
+    raw_multipliers = os.getenv("UNIT_MULTIPLIERS", "")
+    if raw_multipliers.strip():
+        try:
+            unit_multipliers = {k.lower(): int(v) for k, v in json.loads(raw_multipliers).items()}
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            raise RuntimeError(f"UNIT_MULTIPLIERS noto'g'ri JSON: {e}")
+    else:
+        unit_multipliers = {"box": 24, "partiya": 300, "dona": 1, "ta": 1}
+
     return Config(
         hr_internal_api_base_url=os.environ["HR_INTERNAL_API_BASE_URL"],
         hr_internal_api_token=os.environ["HR_INTERNAL_API_TOKEN"],
@@ -25,5 +40,5 @@ def load_config() -> Config:
         ombor_actor_name=os.getenv("OMBOR_ACTOR_NAME", "production-sync"),
         match_threshold=float(os.getenv("MATCH_THRESHOLD", DEFAULT_CONFIDENCE_THRESHOLD)),
         poll_interval_seconds=int(os.getenv("POLL_INTERVAL_SECONDS", "300")),
-        box_to_units=int(os.getenv("BOX_TO_UNITS", "24")),
+        unit_multipliers=unit_multipliers,
     )

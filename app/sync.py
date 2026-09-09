@@ -72,19 +72,19 @@ async def sync_once(
             logger.info("Entry %s needs review: %s", entry.sync_key, match.reason)
             continue
 
-        # HR "box" birligida hisobot beradi, Ombor esa dona (banka) bilan
-        # ishlaydi. 1 box = config.box_to_units dona. Boshqa birlik kelsa
-        # (hozircha HR kodida faqat "box" ishlatiladi), xavfsizlik uchun
-        # konvertatsiya qilinmaydi va review'ga tushadi.
-        if entry.unit == "box":
-            completed_units = entry.completed_qty * config.box_to_units
-        else:
+        # HR turli vazifalarda turli birlikda hisobot berishi mumkin
+        # (masalan ba'zilari "box"da, ba'zilari to'g'ridan-to'g'ri
+        # "partiya"da). config.unit_multipliers har bir birlik uchun
+        # 1 dona (banka)ga necha marta ko'paytirishni bildiradi.
+        multiplier = config.unit_multipliers.get(entry.unit.strip().lower())
+        if multiplier is None:
             state.mark_needs_review(
                 entry.sync_key,
-                reason=f"Noma'lum birlik '{entry.unit}' — konvertatsiya qoidasi yo'q",
+                reason=f"Noma'lum birlik '{entry.unit}' — UNIT_MULTIPLIERS'da yo'q",
             )
             summary.needs_review += 1
             continue
+        completed_units = entry.completed_qty * multiplier
 
         product = products_by_code[match.matched_code]
         source_id = build_source_id("hr-op", entry.sync_key)
