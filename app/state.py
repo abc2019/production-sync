@@ -55,7 +55,8 @@ class StateStore:
         ).fetchall()
         return {row["sync_key"] for row in rows}
 
-    def mark_synced(self, sync_key: str, *, product_id: str, ombor_event_id: str | None, completed_units) -> None:
+    def mark_synced(self, sync_key: str, *, product_id: str | None = None,
+                     ombor_event_id: str | None = None, completed_units=None) -> None:
         self._upsert(sync_key, status="SYNCED", matched_product_id=product_id,
                      ombor_event_id=ombor_event_id, completed_units=completed_units, reason=None)
 

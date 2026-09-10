@@ -24,16 +24,16 @@ async def main() -> None:
         )
 
     logger.info(
-        "production-sync boshlandi (poll_interval=%ss, threshold=%s)",
-        config.poll_interval_seconds, config.match_threshold,
+        "production-sync boshlandi (poll_interval=%ss)",
+        config.poll_interval_seconds,
     )
 
     try:
         while True:
             summary = await sync_once(config, ombor, state)
             logger.info(
-                "Tsikl yakunlandi: tekshirildi=%d, yuborildi=%d, review=%d, xato=%d",
-                summary.checked, summary.synced, summary.needs_review, summary.failed,
+                "Tsikl yakunlandi: tekshirildi=%d, yuborildi=%d, xato=%d",
+                summary.checked, summary.synced, summary.failed,
             )
             await asyncio.sleep(config.poll_interval_seconds)
     finally:

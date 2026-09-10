@@ -1,16 +1,14 @@
 """
 HR botining ICHKI, FAQAT-O'QISH HTTP API'sidan (`internal_api.py`,
-`abc2019/ShohonaWorkBot`) ishlab chiqarish hisobotlarini o'qiydi.
+`abc2019/ShohonaWorkBot`) tayyor, aniq ishlab chiqarish/brak hodisalarini
+o'qiydi.
 
-MUHIM: bu tarmoq orqali (HTTP) o'qiydi, fayl orqali EMAS — Railway'da har
-bir xizmat alohida konteynerda ishlagani uchun, production-sync HR'ning
-SQLite fayliga to'g'ridan-to'g'ri kira olmaydi. HR'ning kodiga yoki
-bazasiga hech qanday YOZUV qilinmaydi — HR faqat `GET
-/internal/production-logs` orqali o'qishga ruxsat beradi.
-
-Manba: `task_quantity_logs` — HR botining o'zi ishlatadigan O'ZGARMAS
-(faqat qo'shiladigan) hisobot jurnali. Har bir qatorning `operation_key`i
-— HR botining o'z idempotentlik kaliti; biz ham xuddi shuni ishlatamiz.
+MUHIM: bu — HR'ning maxsus, BARQAROR eksport jadvali
+(`production_sync_events`) asosida ishlaydi, HR'ning ichki
+(`task_quantity_logs`, `special_type` va h.k.) jadvallariga UMUMAN
+bog'liq emas. Matn moslashtirish (fuzzy matching) yoki birlik
+konvertatsiyasi bu yerda YO'Q — HR o'zi allaqachon aniq
+`ombor_external_code` va `completed_units` (dona) bilan beradi.
 """
 from dataclasses import dataclass
 
@@ -18,38 +16,32 @@ import httpx
 
 
 @dataclass(frozen=True)
-class ProductionLogEntry:
-    log_id: int
-    operation_key: str | None
-    task_id: int
-    task_text: str
-    completed_qty: int
-    unit: str
+class ProductionSyncEvent:
+    id: int
+    operation_key: str  # HR'ning o'z idempotentlik kaliti
+    event_type: str  # "PRODUCED" yoki "DEFECT"
+    ombor_external_code: str
+    completed_units: int
     created_at: str
-
-    @property
-    def sync_key(self) -> str:
-        """Idempotentlik uchun barqaror kalit — operation_key mavjud bo'lsa
-        o'shani, aks holda (eski qatorlar uchun) log_id'ni ishlatadi."""
-        return self.operation_key or f"log-{self.log_id}"
+    source_task_id: int
 
 
 class HRClientError(Exception):
     pass
 
 
-async def fetch_production_log_entries(
+async def fetch_production_sync_events(
     base_url: str,
     token: str,
     *,
     since_id: int = 0,
     limit: int = 200,
     transport: httpx.BaseTransport | None = None,
-) -> list[ProductionLogEntry]:
+) -> list[ProductionSyncEvent]:
     try:
         async with httpx.AsyncClient(timeout=15, transport=transport) as client:
             resp = await client.get(
-                f"{base_url.rstrip('/')}/internal/production-logs",
+                f"{base_url.rstrip('/')}/internal/production-sync-events",
                 params={"since_id": since_id, "limit": limit},
                 headers={"X-Internal-Token": token},
             )
@@ -61,14 +53,14 @@ async def fetch_production_log_entries(
         raise HRClientError(f"HR'ga ulanib bo'lmadi: {e}")
 
     return [
-        ProductionLogEntry(
-            log_id=row["log_id"],
-            operation_key=row.get("operation_key"),
-            task_id=row["task_id"],
-            task_text=row["task_text"],
-            completed_qty=row["completed_qty"],
-            unit=row["unit"],
+        ProductionSyncEvent(
+            id=row["id"],
+            operation_key=row["operation_key"],
+            event_type=row["event_type"],
+            ombor_external_code=row["ombor_external_code"],
+            completed_units=row["completed_units"],
             created_at=row["created_at"],
+            source_task_id=row["source_task_id"],
         )
         for row in rows
     ]

@@ -16,36 +16,49 @@ def make_transport(rows_by_since_id: dict[int, list[dict]], captured: dict | Non
     return httpx.MockTransport(handler)
 
 
+def event_row(**overrides):
+    row = {
+        "id": 1,
+        "operation_key": "produced:plan_task:166",
+        "event_type": "PRODUCED",
+        "ombor_external_code": "DIMLAMA",
+        "completed_units": 600,
+        "created_at": "2026-09-11T06:21:00+00:00",
+        "source_task_id": 166,
+    }
+    row.update(overrides)
+    return row
+
+
 @pytest.mark.asyncio
 async def test_fetch_basic():
-    rows = {0: [{"log_id": 1, "operation_key": "op-1", "task_id": 1,
-                 "task_text": "Behi murabbosi qadoqlash", "completed_qty": 5,
-                 "unit": "box", "created_at": "2026-01-01T10:00:00"}]}
-    entries = await hr_reader.fetch_production_log_entries(
+    rows = {0: [event_row()]}
+    events = await hr_reader.fetch_production_sync_events(
         "http://hr.test", "secret", transport=make_transport(rows)
     )
-    assert len(entries) == 1
-    assert entries[0].task_text == "Behi murabbosi qadoqlash"
-    assert entries[0].completed_qty == 5
-    assert entries[0].sync_key == "op-1"
+    assert len(events) == 1
+    assert events[0].ombor_external_code == "DIMLAMA"
+    assert events[0].completed_units == 600
+    assert events[0].event_type == "PRODUCED"
+    assert events[0].operation_key == "produced:plan_task:166"
+    assert events[0].source_task_id == 166
 
 
 @pytest.mark.asyncio
-async def test_sync_key_falls_back_to_log_id_when_no_operation_key():
-    rows = {0: [{"log_id": 7, "operation_key": None, "task_id": 1,
-                 "task_text": "X", "completed_qty": 3, "unit": "box",
-                 "created_at": "2026-01-01T10:00:00"}]}
-    entries = await hr_reader.fetch_production_log_entries(
+async def test_defect_event_parsed():
+    rows = {0: [event_row(id=2, operation_key="defect:plan_task:166:1", event_type="DEFECT", completed_units=10)]}
+    events = await hr_reader.fetch_production_sync_events(
         "http://hr.test", "secret", transport=make_transport(rows)
     )
-    assert entries[0].sync_key == "log-7"
+    assert events[0].event_type == "DEFECT"
+    assert events[0].completed_units == 10
 
 
 @pytest.mark.asyncio
 async def test_sends_auth_header_and_params():
     captured = {}
     rows = {0: []}
-    await hr_reader.fetch_production_log_entries(
+    await hr_reader.fetch_production_sync_events(
         "http://hr.test", "my-secret-token", since_id=0, limit=50,
         transport=make_transport(rows, captured),
     )
@@ -60,7 +73,7 @@ async def test_http_error_wrapped():
         return httpx.Response(401, text="unauthorized")
 
     with pytest.raises(hr_reader.HRClientError):
-        await hr_reader.fetch_production_log_entries(
+        await hr_reader.fetch_production_sync_events(
             "http://hr.test", "wrong-token", transport=httpx.MockTransport(handler)
         )
 
@@ -71,14 +84,14 @@ async def test_connection_error_wrapped():
         raise httpx.ConnectError("connection refused")
 
     with pytest.raises(hr_reader.HRClientError):
-        await hr_reader.fetch_production_log_entries(
+        await hr_reader.fetch_production_sync_events(
             "http://hr.test", "token", transport=httpx.MockTransport(handler)
         )
 
 
 @pytest.mark.asyncio
 async def test_empty_response():
-    entries = await hr_reader.fetch_production_log_entries(
+    events = await hr_reader.fetch_production_sync_events(
         "http://hr.test", "token", transport=make_transport({0: []})
     )
-    assert entries == []
+    assert events == []
