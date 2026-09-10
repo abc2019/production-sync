@@ -69,7 +69,10 @@ async def sync_once(
         if not match.ready:
             state.mark_needs_review(entry.sync_key, reason=match.reason or "Noaniq moslik")
             summary.needs_review += 1
-            logger.info("Entry %s needs review: %s", entry.sync_key, match.reason)
+            logger.info(
+                "Entry %s needs review: %s | task_text=%r",
+                entry.sync_key, match.reason, entry.task_text,
+            )
             continue
 
         # HR turli vazifalarda turli birlikda hisobot berishi mumkin
