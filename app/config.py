@@ -10,6 +10,7 @@ class Config:
     ombor_api_base_url: str | None
     ombor_actor_name: str
     poll_interval_seconds: int
+    ombor_api_token: str | None = None  # Ombor token auth (ixtiyoriy; docs/auth.md - inventory)
 
 
 def load_config() -> Config:
@@ -20,4 +21,5 @@ def load_config() -> Config:
         ombor_api_base_url=os.getenv("OMBOR_API_BASE_URL", "").strip() or None,
         ombor_actor_name=os.getenv("OMBOR_ACTOR_NAME", "production-sync"),
         poll_interval_seconds=int(os.getenv("POLL_INTERVAL_SECONDS", "300")),
+        ombor_api_token=os.getenv("OMBOR_API_TOKEN", "").strip() or None,
     )
