@@ -95,3 +95,18 @@ async def test_empty_response():
         "http://hr.test", "token", transport=make_transport({0: []})
     )
     assert events == []
+
+
+@pytest.mark.asyncio
+async def test_sends_bearer_and_legacy_header():
+    import httpx
+    from app.hr_reader import fetch_production_sync_events
+    seen = {}
+
+    def handler(request):
+        seen["auth"] = request.headers.get("authorization")
+        seen["legacy"] = request.headers.get("x-internal-token")
+        return httpx.Response(200, json=[])
+
+    await fetch_production_sync_events("http://hr.test", "tok-123", transport=httpx.MockTransport(handler))
+    assert seen == {"auth": "Bearer tok-123", "legacy": "tok-123"}

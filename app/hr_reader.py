@@ -30,6 +30,13 @@ class HRClientError(Exception):
     pass
 
 
+
+def hr_auth_headers(token: str) -> dict:
+    """HR ichki API: Bearer (ERP birxilligi - Ombor/Finance bilan bir xil).
+    Eski X-Internal-Token ham yuboriladi - HR yangilanmagan bo'lsa ham
+    ishlaydi (o'tish davri; HR Bearer'ga o'tgach olib tashlanadi)."""
+    return {"Authorization": f"Bearer {token}", "X-Internal-Token": token}
+
 async def fetch_production_sync_events(
     base_url: str,
     token: str,
@@ -43,7 +50,7 @@ async def fetch_production_sync_events(
             resp = await client.get(
                 f"{base_url.rstrip('/')}/internal/production-sync-events",
                 params={"since_id": since_id, "limit": limit},
-                headers={"X-Internal-Token": token},
+                headers=hr_auth_headers(token),
             )
             resp.raise_for_status()
             rows = resp.json()
