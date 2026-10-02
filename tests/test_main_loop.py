@@ -135,17 +135,16 @@ def test_events_message_is_stable_and_limited():
 
 @pytest.mark.asyncio
 async def test_send_alert_never_raises():
+    import httpx
+    from erp_bridge_kit import ModuleClient, OmborBridgeClient
+
     from app.alerts import send_alert
 
-    class Broken:
-        is_configured = True
+    def boom(request):
+        raise httpx.ConnectError("Ombor ishlamayapti")
 
-        class _client:
-            @staticmethod
-            async def post(path, json):
-                raise RuntimeError("Ombor ishlamayapti")
-
-    assert await send_alert(Broken(), "k", "error", "m") is False
+    broken = OmborBridgeClient(ModuleClient("http://ombor.test", transport=httpx.MockTransport(boom)))
+    assert await send_alert(broken, "k", "error", "m") is False
     assert await send_alert(None, "k", "error", "m") is False
 
 
