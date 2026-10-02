@@ -1,5 +1,5 @@
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from erp_bridge_kit import BridgeError, OmborBridgeClient, build_source_id
 
@@ -16,6 +16,7 @@ class SyncSummary:
     synced: int = 0
     failed: int = 0
     skipped_ombor_not_configured: bool = False
+    failures: list = field(default_factory=list)  # [(operation_key, sabab)]
 
 
 async def _fetch_all_events(
@@ -73,6 +74,7 @@ async def sync_once(
                 reason = f"Ombor'da '{event.ombor_external_code}' kodi topilmadi: {e}"
                 state.mark_failed(event.operation_key, reason=reason)
                 summary.failed += 1
+                summary.failures.append((event.operation_key, reason))
                 logger.warning("Event %s: %s", event.operation_key, reason)
                 continue
 
@@ -89,6 +91,7 @@ async def sync_once(
         except BridgeError as e:
             state.mark_failed(event.operation_key, reason=str(e))
             summary.failed += 1
+            summary.failures.append((event.operation_key, str(e)))
             logger.warning("Event %s push failed: %s", event.operation_key, e)
 
     return summary
