@@ -64,10 +64,16 @@ async def run_forever(config, ombor, state, *, sleep=asyncio.sleep, max_cycles: 
     OWNER'ga ogohlantirish (Ombor /system-alerts orqali, Telegram):
     - ALERT_AFTER_FAILURES ta ketma-ket tsikl yiqilsa - bir marta; tiklanganda - bir marta;
     - hodisalar Ombor'ga yozilmayotgan bo'lsa - ro'yxat (to'plam o'zgarsa yangilanadi);
-      hammasi o'tgach - tiklandi."""
+      hammasi o'tgach - tiklandi.
+
+    Jarayon qayta ishga tushganda (deploy/restart) oldingi muammo xabari
+    ochiq qolgan bo'lishi mumkin - shuning uchun birinchi muvaffaqiyatli
+    tsiklda "tiklandi" har doim bir marta yuboriladi. Ombor uni faqat oldin
+    muammo yuborilgan bo'lsa OWNER'ga jo'natadi (aks holda jim) - spam yo'q."""
     failures = 0
-    cycle_alerted = False
-    events_alerted = False
+    cycle_error_sent = False
+    cycle_recovery_pending = True   # startda noma'lum - ochiq xabar bo'lishi mumkin
+    events_recovery_pending = True
     cycles = 0
     while max_cycles is None or cycles < max_cycles:
         cycles += 1
@@ -82,8 +88,8 @@ async def run_forever(config, ombor, state, *, sleep=asyncio.sleep, max_cycles: 
             logger.exception(
                 "Tsikl xatosi (ketma-ket %d-marta) - %ss dan keyin qayta urinish", failures, delay,
             )
-            if failures >= ALERT_AFTER_FAILURES and not cycle_alerted:
-                cycle_alerted = await send_alert(
+            if failures >= ALERT_AFTER_FAILURES and not cycle_error_sent:
+                cycle_error_sent = await send_alert(
                     ombor, "production-sync:cycle", "error",
                     f"Sinxronizatsiya {failures} marta ketma-ket muvaffaqiyatsiz - ishlab chiqarish "
                     f"Ombor'ga yozilmayapti.\nOxirgi xato: {type(exc).__name__}: {str(exc)[:500]}",
@@ -92,20 +98,21 @@ async def run_forever(config, ombor, state, *, sleep=asyncio.sleep, max_cycles: 
             continue
         if failures:
             logger.info("Ulanish tiklandi (%d ta xatodan keyin)", failures)
-            if cycle_alerted:
-                await send_alert(ombor, "production-sync:cycle", "recovered",
-                                 f"Sinxronizatsiya tiklandi ({failures} ta xatodan keyin).")
+        if failures or cycle_recovery_pending or cycle_error_sent:
+            if await send_alert(ombor, "production-sync:cycle", "recovered",
+                                f"Sinxronizatsiya tiklandi ({failures} ta xatodan keyin)." if failures
+                                else "Sinxronizatsiya ishlayapti."):
+                cycle_recovery_pending = False
         failures = 0
-        cycle_alerted = False
+        cycle_error_sent = False
 
         if summary.failures:
-            events_alerted = await send_alert(
-                ombor, "production-sync:events", "warning", events_message(summary.failures),
-            ) or events_alerted
-        elif events_alerted and summary.checked == 0:
-            await send_alert(ombor, "production-sync:events", "recovered",
-                             "Barcha ishlab chiqarish hodisalari Ombor'ga yozildi.")
-            events_alerted = False
+            await send_alert(ombor, "production-sync:events", "warning", events_message(summary.failures))
+            events_recovery_pending = True
+        elif events_recovery_pending and summary.checked == 0:
+            if await send_alert(ombor, "production-sync:events", "recovered",
+                                "Barcha ishlab chiqarish hodisalari Ombor'ga yozildi."):
+                events_recovery_pending = False
 
         logger.info(
             "Tsikl yakunlandi: tekshirildi=%d, yuborildi=%d, xato=%d",

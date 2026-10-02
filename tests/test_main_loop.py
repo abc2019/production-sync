@@ -97,9 +97,10 @@ async def test_alert_after_three_failures_once_then_recovered(monkeypatch):
     err = HRClientError("HR 404: Application not found")
     rec = _patch(monkeypatch, [err, err, err, err, _ok(), _ok()])
     await main.run_forever(SimpleNamespace(poll_interval_seconds=1), object(), None, sleep=_noop, max_cycles=6)
-    assert [(k, lvl) for k, lvl, _ in rec.alerts] == [
+    cycle = [(k, lvl) for k, lvl, _ in rec.alerts if k == "production-sync:cycle"]
+    assert cycle == [
         ("production-sync:cycle", "error"),       # 3-xatoda, 4-da takror yo'q
-        ("production-sync:cycle", "recovered"),
+        ("production-sync:cycle", "recovered"),   # bir marta
     ]
     assert "3 marta ketma-ket" in rec.alerts[0][2] and "Application not found" in rec.alerts[0][2]
 
@@ -109,7 +110,8 @@ async def test_two_failures_do_not_alert(monkeypatch):
     err = RuntimeError("x")
     rec = _patch(monkeypatch, [err, err, _ok()])
     await main.run_forever(SimpleNamespace(poll_interval_seconds=1), object(), None, sleep=_noop, max_cycles=3)
-    assert rec.alerts == []
+    # Xato xabari yo'q; "tiklandi" yuboriladi, lekin Ombor oldin muammo yuborilmagani uchun jim qoladi
+    assert all(lvl == "recovered" for _, lvl, _ in rec.alerts)
 
 
 @pytest.mark.asyncio
@@ -117,12 +119,13 @@ async def test_event_failures_reported_then_recovered(monkeypatch):
     fails = [("produced:plan_task:191", "400: Yetarli xomashyo yo'q")]
     rec = _patch(monkeypatch, [_ok(1, fails), _ok(1, fails), _ok(1), _ok(0)])
     await main.run_forever(SimpleNamespace(poll_interval_seconds=1), object(), None, sleep=_noop, max_cycles=4)
-    levels = [(k, lvl) for k, lvl, _ in rec.alerts]
+    levels = [(k, lvl) for k, lvl, _ in rec.alerts if k == "production-sync:events"]
     # Har tsiklda yuboriladi - takrorni Ombor to'xtatadi (bir xil matn)
     assert levels == [("production-sync:events", "warning"), ("production-sync:events", "warning"),
                       ("production-sync:events", "recovered")]
-    assert rec.alerts[0][2] == rec.alerts[1][2]
-    assert "produced:plan_task:191" in rec.alerts[0][2]
+    ev = [m for k, _, m in rec.alerts if k == "production-sync:events"]
+    assert ev[0] == ev[1]
+    assert "produced:plan_task:191" in ev[0]
 
 
 def test_events_message_is_stable_and_limited():
@@ -168,3 +171,33 @@ async def test_send_alert_posts_to_ombor():
     assert seen["path"] == "/system-alerts"
     assert seen["body"] == {"source": "production-sync", "key": "production-sync:cycle",
                             "level": "error", "message": "xato"}
+
+
+@pytest.mark.asyncio
+async def test_first_success_after_restart_sends_recovered_once(monkeypatch):
+    """Restartdan keyin oldingi jarayonning ochiq xabari yopilishi uchun."""
+    rec = _patch(monkeypatch, [_ok(), _ok(), _ok()])
+    await main.run_forever(SimpleNamespace(poll_interval_seconds=1), object(), None, sleep=_noop, max_cycles=3)
+    assert [(k, lvl) for k, lvl, _ in rec.alerts] == [
+        ("production-sync:cycle", "recovered"), ("production-sync:events", "recovered")]
+
+
+@pytest.mark.asyncio
+async def test_recovered_retried_if_ombor_was_unreachable(monkeypatch):
+    results = iter([False, True])
+    sent = []
+
+    async def flaky_alert(ombor, key, level, message):
+        if key == "production-sync:cycle":
+            ok = next(results)
+            sent.append(ok)
+            return ok
+        return True
+    monkeypatch.setattr(main, "send_alert", flaky_alert)
+    _ok_iter = iter([_ok(), _ok(), _ok()])
+
+    async def fake_sync(config, ombor, state):
+        return next(_ok_iter)
+    monkeypatch.setattr(main, "sync_once", fake_sync)
+    await main.run_forever(SimpleNamespace(poll_interval_seconds=1), object(), None, sleep=_noop, max_cycles=3)
+    assert sent == [False, True]  # birinchisi yetmadi - keyingi tsiklda qayta, keyin to'xtaydi
