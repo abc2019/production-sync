@@ -92,3 +92,12 @@ tarmoq orqali gaplashadi). `STATE_DATABASE_PATH` uchun Railway Volume
 tavsiya etiladi — aks holda har qayta deployda holat yo'qolib, hodisalar
 qayta tekshiriladi (zararsiz, chunki Ombor tarafida ham idempotent, lekin
 ortiqcha ish).
+
+## Ombor'ga yozish: xarita orqali (ERP)
+
+HR hodisasidagi kod (`ombor_external_code`, masalan `QOZON_KABOB`) o'zicha
+`POST /production-batches/by-mapping` ga yuboriladi (`system=hr`). Mahsulotni
+**Ombor** aniqlaydi: xaritada bo'lsa — bog'langan mahsulot(lar) (tarkibli taom
+qismlarga, har biri o'z retsepti bilan); xaritada yo'q bo'lsa — shu kodli
+Ombor mahsuloti. Bog'lanmagan kod — hodisa "yozilmayapti" ro'yxatiga va OWNER'ga
+⚠️ (sabab: Ombor boti → 🔗 Mahsulot kodlari → Ishlab chiqarish).
