@@ -39,20 +39,25 @@ def event(id, operation_key, ombor_external_code, completed_units, event_type="P
     }
 
 
-def default_ombor_handler_factory(pushed: list, *, known_codes=None):
+def default_ombor_handler_factory(pushed: list, *, known_codes=None, mapping=None):
+    """Soxta Ombor POST /production-batches/by-mapping: xaritadagi kod ->
+    qismlar; xaritada yo'q, lekin known_codes'da bor -> o'sha mahsulot;
+    aks holda 422 unmapped_codes. pushed'ga har qism bitta yozuv."""
     known_codes = known_codes or {"DIMLAMA": "prod-dimlama", "SPAGETTI": "prod-spagetti"}
+    mapping = mapping or {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.startswith("/products/by-code/"):
-            code = request.url.path.rsplit("/", 1)[-1]
-            if code in known_codes:
-                return httpx.Response(200, json={"id": known_codes[code], "external_code": code})
-            return httpx.Response(404, json={"detail": "topilmadi"})
-        if request.url.path == "/production-batches":
+        if request.url.path == "/production-batches/by-mapping":
             import json
             body = json.loads(request.content)
-            pushed.append(body)
-            return httpx.Response(201, json={"id": f"event-{len(pushed)}", "duplicate": False})
+            assert body["system"] == "hr"
+            parts = mapping.get(body["code"]) or ([body["code"]] if body["code"] in known_codes else [])
+            if not parts:
+                return httpx.Response(422, json={"detail": {"message": "m", "unmapped_codes": [body["code"]]}})
+            for i, code in enumerate(parts):
+                sid = body["source_id"] if len(parts) == 1 else f"{body['source_id']}#{i}"
+                pushed.append({**body, "source_id": sid, "finished_product_id": known_codes.get(code, f"prod-{code}")})
+            return httpx.Response(201, json={"code": body["code"], "events": [], "duplicate": False})
         return httpx.Response(404, json={"detail": "not found"})
 
     return handler
@@ -64,7 +69,7 @@ def make_ombor(handler):
 
 
 @pytest.mark.asyncio
-async def test_produced_event_pushed_with_resolved_product_id(state_db_path):
+async def test_produced_event_pushed_by_code_ombor_resolves(state_db_path):
     events = [event(1, "produced:plan_task:166", "DIMLAMA", 600)]
     pushed = []
     ombor = make_ombor(default_ombor_handler_factory(pushed))
@@ -120,8 +125,6 @@ async def test_ombor_push_failure_marks_failed_and_retries(state_db_path):
     events = [event(1, "produced:plan_task:1", "DIMLAMA", 300)]
 
     def failing_handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.startswith("/products/by-code/"):
-            return httpx.Response(200, json={"id": "prod-dimlama", "external_code": "DIMLAMA"})
         return httpx.Response(500, text="internal error")
 
     ombor = make_ombor(failing_handler)
@@ -158,28 +161,28 @@ async def test_already_synced_event_not_reprocessed(state_db_path):
 
 
 @pytest.mark.asyncio
-async def test_multiple_events_same_code_resolved_once(state_db_path):
-    events = [
-        event(1, "produced:plan_task:1", "DIMLAMA", 300),
-        event(2, "produced:plan_task:2", "DIMLAMA", 150),
-    ]
-    lookups = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.startswith("/products/by-code/"):
-            lookups.append(request.url.path)
-            return httpx.Response(200, json={"id": "prod-dimlama", "external_code": "DIMLAMA"})
-        if request.url.path == "/production-batches":
-            return httpx.Response(201, json={"id": "e", "duplicate": False})
-        return httpx.Response(404)
-
-    ombor = make_ombor(handler)
+async def test_composite_code_sent_once_ombor_splits(state_db_path):
+    """QOZON_KABOB = go'sht + fri - production-sync kodni o'zicha yuboradi, Ombor ajratadi."""
+    events = [event(1, "produced:plan_task:7", "QOZON_KABOB", 300)]
+    pushed = []
+    ombor = make_ombor(default_ombor_handler_factory(
+        pushed, mapping={"QOZON_KABOB": ["QOZON_KABOB_GOSHT", "QOZON_KABOB_FRI"]}))
     state = StateStore(state_db_path)
-    config = make_config()
+    summary = await sync_once(make_config(), ombor, state, hr_transport=hr_transport_with_events(events))
+    assert summary.synced == 1 and summary.failed == 0
+    assert [p["finished_product_id"] for p in pushed] == ["prod-QOZON_KABOB_GOSHT", "prod-QOZON_KABOB_FRI"]
+    assert all(p["completed_units"] == "300" for p in pushed)
+    state.close()
 
-    summary = await sync_once(config, ombor, state, hr_transport=hr_transport_with_events(events))
-    assert summary.synced == 2
-    assert len(lookups) == 1  # faqat bir marta so'ralgan (keш orqali)
+
+@pytest.mark.asyncio
+async def test_unmapped_code_reason_points_to_ombor_bot(state_db_path):
+    events = [event(1, "produced:plan_task:8", "UYGUR_LAGMON", 300)]
+    ombor = make_ombor(default_ombor_handler_factory([]))
+    state = StateStore(state_db_path)
+    summary = await sync_once(make_config(), ombor, state, hr_transport=hr_transport_with_events(events))
+    assert summary.failed == 1
+    assert "UYGUR_LAGMON" in summary.failures[0][1] and "🔗 Mahsulot kodlari" in summary.failures[0][1]
     state.close()
 
 

@@ -1,6 +1,7 @@
 import logging
 from dataclasses import dataclass, field
 
+from erp_bridge_kit.ombor import unmapped_codes
 from erp_bridge_kit import BridgeError, OmborBridgeClient, build_source_id
 
 from app import hr_reader
@@ -60,38 +61,28 @@ async def sync_once(
     if not events:
         return summary
 
-    # Bir xil external_code uchun takroriy GET /products/by-code so'rovlarini
-    # oldini olish uchun kichik keш (bitta tsikl davomida faqat).
-    code_cache: dict[str, dict] = {}
-
+    # ERP: mahsulot identifikatsiyasi Ombor'da. HR kodini o'zicha yuboramiz -
+    # Ombor xarita (system=hr) bo'yicha mahsulot(lar)ga aylantiradi: tarkibli
+    # taom (masalan QOZON_KABOB = go'sht + fri) qismlarga, har biri o'z
+    # retsepti bilan. Xaritada yo'q kod - shu kodli Ombor mahsuloti.
     for event in events:
-        product = code_cache.get(event.ombor_external_code)
-        if product is None:
-            try:
-                product = await ombor.get_product_by_code(event.ombor_external_code)
-                code_cache[event.ombor_external_code] = product
-            except BridgeError as e:
-                reason = f"Ombor'da '{event.ombor_external_code}' kodi topilmadi: {e}"
-                state.mark_failed(event.operation_key, reason=reason)
-                summary.failed += 1
-                summary.failures.append((event.operation_key, reason))
-                logger.warning("Event %s: %s", event.operation_key, reason)
-                continue
-
         source_id = build_source_id("hr-event", event.operation_key)
         try:
-            await ombor.push_production_batch(
+            await ombor.push_production_by_mapping(
                 source_id=source_id,
-                finished_product_id=product["id"],
+                code=event.ombor_external_code,
                 completed_units=event.completed_units,
                 event_type=event.event_type,
             )
             state.mark_synced(event.operation_key)
             summary.synced += 1
         except BridgeError as e:
-            state.mark_failed(event.operation_key, reason=str(e))
+            missing = unmapped_codes(e)
+            reason = (f"Ombor'da '{event.ombor_external_code}' kodi hech qaysi mahsulotga bog'lanmagan "
+                      "(Ombor boti: 🔗 Mahsulot kodlari -> Ishlab chiqarish)") if missing else str(e)
+            state.mark_failed(event.operation_key, reason=reason)
             summary.failed += 1
-            summary.failures.append((event.operation_key, str(e)))
-            logger.warning("Event %s push failed: %s", event.operation_key, e)
+            summary.failures.append((event.operation_key, reason))
+            logger.warning("Event %s push failed: %s", event.operation_key, reason)
 
     return summary
